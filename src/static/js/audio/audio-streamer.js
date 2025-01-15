@@ -1,5 +1,6 @@
 import { registeredWorklets } from '../core/worklet-registry.js';
 import { CONFIG } from '../config/config.js';
+import { Logger } from '../utils/logger.js';
 
 /**
  * @class AudioStreamer
@@ -72,6 +73,8 @@ export class AudioStreamer {
      * @param {Int16Array} chunk - The audio data chunk.
      */
     addPCM16(chunk) {
+        console.log('📥 Received PCM16 audio chunk');
+        Logger.debug('📥 Received PCM16 audio chunk');
         const float32Array = new Float32Array(chunk.length / 2);
         const dataView = new DataView(chunk.buffer);
 
@@ -96,6 +99,7 @@ export class AudioStreamer {
         }
 
         if (!this.isPlaying) {
+            Logger.info('▶️ Starting audio playback');
             this.isPlaying = true;
             this.scheduledTime = this.context.currentTime + this.initialBufferTime;
             this.scheduleNextBuffer();
@@ -119,9 +123,17 @@ export class AudioStreamer {
      * @description Schedules the next audio buffer for playback.
      */
     scheduleNextBuffer() {
+        if (this.audioQueue.length > 0) {
+            //Logger.debug(`📊 Queue status: ${this.audioQueue.length} buffers remaining`);
+        }
+        else {
+           //Logger.debug('📊 Queue is empty');
+        }
+        
         const SCHEDULE_AHEAD_TIME = 0.2;
 
         while (this.audioQueue.length > 0 && this.scheduledTime < this.context.currentTime + SCHEDULE_AHEAD_TIME) {
+            Logger.debug('🎵 Scheduling next audio buffer');
             const audioData = this.audioQueue.shift();
             const audioBuffer = this.createAudioBuffer(audioData);
             const source = this.context.createBufferSource();
@@ -141,6 +153,7 @@ export class AudioStreamer {
 
             source.buffer = audioBuffer;
             source.connect(this.gainNode);
+            Logger.debug('🔊 Audio source connected to gain node');
 
             const worklets = registeredWorklets.get(this.context);
 
@@ -161,25 +174,15 @@ export class AudioStreamer {
 
             const startTime = Math.max(this.scheduledTime, this.context.currentTime);
             source.start(startTime);
+            Logger.debug(`🎵 Started playing audio buffer at time: ${startTime}`);
 
             this.scheduledTime = startTime + audioBuffer.duration;
         }
 
         if (this.audioQueue.length === 0 && this.processingBuffer.length === 0) {
             if (this.isStreamComplete) {
+                Logger.info('✅ Audio stream playback completed');
                 this.isPlaying = false;
-                if (this.checkInterval) {
-                    clearInterval(this.checkInterval);
-                    this.checkInterval = null;
-                }
-            } else {
-                if (!this.checkInterval) {
-                    this.checkInterval = window.setInterval(() => {
-                        if (this.audioQueue.length > 0 || this.processingBuffer.length >= this.bufferSize) {
-                            this.scheduleNextBuffer();
-                        }
-                    }, 100);
-                }
             }
         } else {
             const nextCheckTime = (this.scheduledTime - this.context.currentTime) * 1000;
@@ -231,8 +234,10 @@ export class AudioStreamer {
      * @description Marks the audio stream as complete and schedules any remaining data in the buffer.
      */
     complete() {
+        Logger.info('🏁 Marking audio stream as complete');
         this.isStreamComplete = true;
         if (this.processingBuffer.length > 0) {
+            Logger.debug('📝 Processing remaining buffer data');
             this.audioQueue.push(this.processingBuffer);
             this.processingBuffer = new Float32Array(0);
             if (this.isPlaying) {

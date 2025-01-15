@@ -27,6 +27,49 @@ export class AudioRecorder {
 
         // Add state tracking
         this.isRecording = false;
+
+        // 添加语音识别相关属性
+        this.recognition = null;
+        this.initSpeechRecognition();
+    }
+
+    initSpeechRecognition() {
+        try {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                Logger.warn('❌ Speech recognition not supported in this browser');
+                return;
+            }
+
+            this.recognition = new SpeechRecognition();
+            this.recognition.continuous = true;
+            this.recognition.interimResults = true;
+            this.recognition.lang = 'zh-CN'; // 设置为中文识别
+
+            this.recognition.onresult = (event) => {
+                const result = event.results[event.results.length - 1];
+                const transcript = result[0].transcript;
+                
+                // 将识别结果输出到 logs-container
+                const logsContainer = document.getElementById('logs-container');
+                if (logsContainer) {
+                    const logEntry = document.createElement('div');
+                    logEntry.className = 'log-entry speech-recognition';
+                    logEntry.innerHTML = `🎤 识别结果: ${transcript}`;
+                    logsContainer.appendChild(logEntry);
+                    logsContainer.scrollTop = logsContainer.scrollHeight;
+                }
+                
+                Logger.info(`🎤 Speech recognized: ${transcript}`);
+            };
+
+            this.recognition.onerror = (event) => {
+                Logger.error('❌ Speech recognition error:', event.error);
+            };
+
+        } catch (error) {
+            Logger.error('❌ Error initializing speech recognition:', error);
+        }
     }
 
     /**
@@ -37,26 +80,31 @@ export class AudioRecorder {
      * @async
      */
     async start(onAudioData) {
+        Logger.info('🎤 Starting audio recording...');
         this.onAudioData = onAudioData;
         try {
             // Request microphone access
+            Logger.info('🎤 Requesting microphone access...');
             this.stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
                     channelCount: 1,
                     sampleRate: this.sampleRate
                 } 
             });
+            Logger.info('✅ Microphone access granted');
             
             this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
-            this.source = this.audioContext.createMediaStreamSource(this.stream);
-
-            // Load and initialize audio worklet
+            Logger.info(`🔊 Audio context created with sample rate: ${this.sampleRate}`);
+            
+            // Load worklet
+            Logger.info('⚙️ Loading audio processing worklet...');
             await this.audioContext.audioWorklet.addModule('js/audio/worklets/audio-processing.js');
-            this.processor = new AudioWorkletNode(this.audioContext, 'audio-recorder-worklet');
+            Logger.info('✅ Audio worklet loaded');
             
             // Handle processed audio data
             this.processor.port.onmessage = (event) => {
                 if (event.data.event === 'chunk' && this.onAudioData && this.isRecording) {
+                    Logger.debug('📢 Audio chunk processed');
                     const base64Data = this.arrayBufferToBase64(event.data.data.int16arrayBuffer);
                     this.onAudioData(base64Data);
                 }
@@ -66,8 +114,14 @@ export class AudioRecorder {
             this.source.connect(this.processor);
             this.processor.connect(this.audioContext.destination);
             this.isRecording = true;
+
+            // 启动语音识别
+            if (this.recognition) {
+                this.recognition.start();
+                Logger.info('🎤 Speech recognition started');
+            }
         } catch (error) {
-            console.error('Error starting audio recording:', error);
+            Logger.error('❌ Error starting audio recording:', error);
             throw error;
         }
     }
@@ -90,6 +144,12 @@ export class AudioRecorder {
                 this.stream = null;
             }
 
+            // 停止语音识别
+            if (this.recognition) {
+                this.recognition.stop();
+                Logger.info('🎤 Speech recognition stopped');
+            }
+            
             this.isRecording = false;
             Logger.info('Audio recording stopped successfully');
         } catch (error) {
