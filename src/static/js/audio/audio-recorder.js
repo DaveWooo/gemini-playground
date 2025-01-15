@@ -35,6 +35,7 @@ export class AudioRecorder {
 
     initSpeechRecognition() {
         try {
+            console.log('🎤 Initializing speech recognition...');
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 Logger.warn('❌ Speech recognition not supported in this browser');
@@ -94,6 +95,7 @@ export class AudioRecorder {
             Logger.info('✅ Microphone access granted');
             
             this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+            this.source = this.audioContext.createMediaStreamSource(this.stream);
             Logger.info(`🔊 Audio context created with sample rate: ${this.sampleRate}`);
             
             // Load worklet
@@ -101,24 +103,31 @@ export class AudioRecorder {
             await this.audioContext.audioWorklet.addModule('js/audio/worklets/audio-processing.js');
             Logger.info('✅ Audio worklet loaded');
             
-            // Handle processed audio data
-            this.processor.port.onmessage = (event) => {
-                if (event.data.event === 'chunk' && this.onAudioData && this.isRecording) {
-                    Logger.debug('📢 Audio chunk processed');
-                    const base64Data = this.arrayBufferToBase64(event.data.data.int16arrayBuffer);
-                    this.onAudioData(base64Data);
+            // 创建 processor
+            this.processor = new AudioWorkletNode(this.audioContext, 'audio-recorder-worklet');
+            
+            // 确保 processor 创建成功后再设置消息处理
+            if (this.processor && this.processor.port) {
+                this.processor.port.onmessage = (event) => {
+                    if (event.data.event === 'chunk' && this.onAudioData && this.isRecording) {
+                        Logger.debug('📢 Audio chunk processed');
+                        const base64Data = this.arrayBufferToBase64(event.data.data.int16arrayBuffer);
+                        this.onAudioData(base64Data);
+                    }
+                };
+
+                // Connect audio nodes
+                this.source.connect(this.processor);
+                this.processor.connect(this.audioContext.destination);
+                this.isRecording = true;
+
+                // 启动语音识别
+                if (this.recognition) {
+                    this.recognition.start();
+                    Logger.info('🎤 Speech recognition started');
                 }
-            };
-
-            // Connect audio nodes
-            this.source.connect(this.processor);
-            this.processor.connect(this.audioContext.destination);
-            this.isRecording = true;
-
-            // 启动语音识别
-            if (this.recognition) {
-                this.recognition.start();
-                Logger.info('🎤 Speech recognition started');
+            } else {
+                throw new Error('Failed to create audio processor');
             }
         } catch (error) {
             Logger.error('❌ Error starting audio recording:', error);

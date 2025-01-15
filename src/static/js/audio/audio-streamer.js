@@ -28,6 +28,96 @@ export class AudioStreamer {
         this.onComplete = () => { };
         this.gainNode.connect(this.context.destination);
         this.addPCM16 = this.addPCM16.bind(this);
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.speechRecognizer = null;
+        this.isRecognitionActive = false;
+        this.processor = null;
+        this.initSpeechRecognition();
+    }
+
+    initSpeechRecognition() {
+        try {
+            console.log('🎤 Initializing server audio recognition...');
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                Logger.warn('❌ Server audio recognition not supported');
+                return;
+            }
+
+            this.speechRecognizer = new SpeechRecognition();
+            this.speechRecognizer.continuous = true;
+            this.speechRecognizer.interimResults = false;
+            this.speechRecognizer.lang = 'zh-CN';
+            
+            // 处理识别结果
+            this.speechRecognizer.onresult = (event) => {
+                console.log('🔄 onresult:',event);
+                const result = event.results[event.results.length - 1];
+                if (result.isFinal) {
+                    const transcript = result[0].transcript;
+                    this.handleTranscript(transcript);
+                }
+            };
+
+            // 改进错误处理
+            this.speechRecognizer.onerror = (event) => {
+                if (event.error === 'no-speech') {
+                    console.log('🔄 No speech detected');
+                    this.restartRecognition();
+                } else {
+                    Logger.error('❌ Server audio recognition error:', event.error);
+                }
+                this.isRecognitionActive = false;
+            };
+
+            // 改进结束处理
+            this.speechRecognizer.onend = () => {
+                console.log('🎤 Recognition session ended');
+                this.isRecognitionActive = false;
+                // 如果还在播放且不是主动停止，则重新启动识别
+                if (this.isPlaying && !this.isStreamComplete) {
+                    this.restartRecognition();
+                }
+            };
+
+        } catch (error) {
+            Logger.error('❌ Error initializing server audio recognition:', error);
+        }
+    }
+
+    restartRecognition() {
+        if (this.isRecognitionActive) {
+            return;
+        }
+        
+        try {
+            console.log('🔄 Restarting recognition...');
+            setTimeout(() => {
+                if (!this.isRecognitionActive) {
+                    this.speechRecognizer.start();
+                    this.isRecognitionActive = true;
+                    console.log('✅ Recognition restarted');
+                }
+            }, 100);
+        } catch (error) {
+            Logger.error('❌ Error restarting recognition:', error);
+            this.isRecognitionActive = false;
+        }
+    }
+
+    handleTranscript(transcript) {
+        console.log('🤖 Server response transcript:', transcript);
+        logMessage('Dave, How are you', 'Local');
+        // 输出到日志容器
+        const logsContainer = document.getElementById('logs-container');
+        if (logsContainer) {
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry server-speech';
+            logEntry.innerHTML = `🤖 服务器回复: ${transcript}`;
+            logsContainer.appendChild(logEntry);
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
     }
 
     /**
@@ -56,15 +146,25 @@ export class AudioStreamer {
         try {
             const absolutePath = `/${workletSrc}`;
             await this.context.audioWorklet.addModule(absolutePath);
+            
+            // 创建 AudioWorkletNode
+            this.processor = new AudioWorkletNode(this.context, workletName);
+            workletsRecord[workletName].node = this.processor;
+
+            // 设置消息处理
+            if (this.processor && this.processor.port) {
+                this.processor.port.onmessage = (ev) => {
+                    if (handler) {
+                        handler.call(this.processor.port, ev);
+                    }
+                };
+            }
+
+            return this;
         } catch (error) {
             console.error('Error loading worklet:', error);
             throw error;
         }
-        const worklet = new AudioWorkletNode(this.context, workletName);
-
-        workletsRecord[workletName].node = worklet;
-
-        return this;
     }
 
     /**
@@ -74,7 +174,20 @@ export class AudioStreamer {
      */
     addPCM16(chunk) {
         console.log('📥 Received PCM16 audio chunk');
-        Logger.debug('📥 Received PCM16 audio chunk');
+        
+        // 确保在有音频数据时启动识别
+        if (this.speechRecognizer && !this.isRecognitionActive) {
+            try {
+                console.log('🎤 Starting recognition for new audio stream');
+                this.speechRecognizer.start();
+                this.isRecognitionActive = true;
+                Logger.info('🎤 Server audio recognition started');
+            } catch (error) {
+                Logger.error('❌ Error starting recognition:', error);
+                this.isRecognitionActive = false;
+            }
+        }
+
         const float32Array = new Float32Array(chunk.length / 2);
         const dataView = new DataView(chunk.buffer);
 
@@ -127,13 +240,12 @@ export class AudioStreamer {
             //Logger.debug(`📊 Queue status: ${this.audioQueue.length} buffers remaining`);
         }
         else {
-           //Logger.debug('📊 Queue is empty');
+           //Logger.debug(' Queue is empty');
         }
         
         const SCHEDULE_AHEAD_TIME = 0.2;
 
         while (this.audioQueue.length > 0 && this.scheduledTime < this.context.currentTime + SCHEDULE_AHEAD_TIME) {
-            Logger.debug('🎵 Scheduling next audio buffer');
             const audioData = this.audioQueue.shift();
             const audioBuffer = this.createAudioBuffer(audioData);
             const source = this.context.createBufferSource();
@@ -155,21 +267,10 @@ export class AudioStreamer {
             source.connect(this.gainNode);
             Logger.debug('🔊 Audio source connected to gain node');
 
-            const worklets = registeredWorklets.get(this.context);
-
-            if (worklets) {
-                Object.entries(worklets).forEach(([workletName, graph]) => {
-                    const { node, handlers } = graph;
-                    if (node) {
-                        source.connect(node);
-                        node.port.onmessage = function (ev) {
-                            handlers.forEach((handler) => {
-                                handler.call(node.port, ev);
-                            });
-                        };
-                        node.connect(this.context.destination);
-                    }
-                });
+            // 如果 processor 存在，连接到处理器
+            if (this.processor) {
+                source.connect(this.processor);
+                this.processor.connect(this.context.destination);
             }
 
             const startTime = Math.max(this.scheduledTime, this.context.currentTime);
@@ -213,6 +314,17 @@ export class AudioStreamer {
             this.gainNode = this.context.createGain();
             this.gainNode.connect(this.context.destination);
         }, 200);
+
+        // 停止语音识别
+        if (this.speechRecognizer && this.isRecognitionActive) {
+            try {
+                this.speechRecognizer.stop();
+                this.isRecognitionActive = false;
+                Logger.info('🎤 Server audio recognition stopped');
+            } catch (error) {
+                Logger.error('❌ Error stopping recognition:', error);
+            }
+        }
     }
 
     /**
@@ -245,6 +357,24 @@ export class AudioStreamer {
             }
         } else {
             this.onComplete();
+        }
+    }
+
+    startRecognition(audioBlob) {
+        if (!this.recognition) return;
+
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        
+        audio.addEventListener('ended', () => {
+            URL.revokeObjectURL(audioUrl);
+        });
+
+        try {
+            this.recognition.start();
+            audio.play();
+        } catch (error) {
+            Logger.error('❌ Error starting recognition:', error);
         }
     }
 } 
