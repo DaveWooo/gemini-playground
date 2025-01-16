@@ -1,5 +1,23 @@
 {
-    "tasks": {
-      "start": "deno run --allow-net --allow-read src/index.ts"
-    }
+  "tasks": {
+    "start": "deno run --allow-net --allow-read src/index.js"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": [
+      "deno.window",
+      "dom"
+    ]
+  },
+  "imports": {
+    "std/": "https://deno.land/std@0.204.0/"
+  },
+  "deploy": {
+    "project": "40f18aef-12a8-48a6-9d4d-62aa1527c6ee",
+    "exclude": [
+      "**/node_modules"
+    ],
+    "include": [],
+    "entrypoint": "src\\index.js"
+  }
 }
